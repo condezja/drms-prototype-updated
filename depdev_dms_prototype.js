@@ -2927,6 +2927,7 @@ function prepareLogin(role) {
       authCard.style.boxShadow = "";
     }, 500);
   }
+
 }
 function loginAs(role) {
   showLoading(true);
@@ -3598,6 +3599,16 @@ function statusPill(s) {
 // ═══════════════════════════════════════════════════════════════════════════
 // WORKFLOW STATUS DROPDOWN - REPLACES STATIC STATUS BADGES
 // ═══════════════════════════════════════════════════════════════════════════
+
+var workflowStatuses = [
+  { value: "New", label: "New" },
+  { value: "Sent", label: "Sent" },
+  { value: "Acknowledged", label: "Acknowledged" },
+  { value: "In Progress", label: "In Progress" },
+  { value: "Needs Clarification", label: "Needs Clarification" },
+  { value: "On Hold", label: "On Hold" },
+  { value: "Done", label: "Done" },
+];
 
 function renderStatusDropdown(docRef, currentStatus, isEditable) {
   // Normalize current status
@@ -4381,14 +4392,19 @@ function renderIncoming() {
 }
 
 function renderOutgoing() {
-  currentOutgoingTab = "all";
+  if (currentUser.role !== "staff" || !["all", "active", "onhold", "done", "for-approval", "regular-doc"].includes(currentOutgoingTab)) {
+    currentOutgoingTab = "all";
+  }
   var visibleDocs = getVisibleDocumentsForRole();
-  var outgoingDocs = visibleDocs.filter(function (d) {
+  var outgoingDocs = filterDocsByTab(visibleDocs.filter(function (d) {
     return isOutgoingDocumentForUser(d, currentUser);
-  });
+  }), currentOutgoingTab);
   var h = "";
   h += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem">';
-  h += '<div class="tab-bar" id="out-tabs"><div class="tab active" onclick="setTab(this,\'all\')">All</div><div class="tab" onclick="setTab(this,\'active\')">Active</div><div class="tab" onclick="setTab(this,\'onhold\')">On Hold</div><div class="tab" onclick="setTab(this,\'done\')">Done</div></div>';
+  var staffTabs = currentUser.role === "staff"
+    ? '<div class="tab ' + (currentOutgoingTab === "for-approval" ? "active" : "") + '" onclick="setTab(this,\'for-approval\')">For Approval</div><div class="tab ' + (currentOutgoingTab === "regular-doc" ? "active" : "") + '" onclick="setTab(this,\'regular-doc\')">Regular Doc</div>'
+    : "";
+  h += '<div class="tab-bar" id="out-tabs"><div class="tab ' + (currentOutgoingTab === "all" ? "active" : "") + '" onclick="setTab(this,\'all\')">All</div><div class="tab ' + (currentOutgoingTab === "active" ? "active" : "") + '" onclick="setTab(this,\'active\')">Active</div><div class="tab ' + (currentOutgoingTab === "onhold" ? "active" : "") + '" onclick="setTab(this,\'onhold\')">On Hold</div><div class="tab ' + (currentOutgoingTab === "done" ? "active" : "") + '" onclick="setTab(this,\'done\')">Done</div>' + staffTabs + '</div>';
   h += "</div>";
   h += '<div class="card"><div class="card-head"><div class="card-title">Outgoing Documents</div><div id="outgoing-count" style="font-size:12px;color:var(--muted)">' + outgoingDocs.length + " records</div></div>";
   h += '<div class="doc-table-wrap"><table class="doc-table"><thead><tr><th>Reference No.</th><th>Direction</th><th>Type</th><th>To</th><th>Division</th><th>Subject</th><th>Priority</th><th>Status</th><th>Actions</th></tr></thead><tbody id="outgoing-tbody">';
@@ -5190,7 +5206,7 @@ var USER_ACCOUNTS = [
     role: "Staff",
     division: "Finance and Administrative Division",
     email: "ana@depdev7.gov.ph",
-    status: "Pending",
+    status: "Active",
     tempPassword: "password",
     docAccess: "Division",
     funcAccess: "Basic",
@@ -8464,12 +8480,14 @@ function openUploadDocumentModal() {
   var refField = document.getElementById("upload-document-ref");
   var dateField = document.getElementById("upload-document-date");
   var uploaderField = document.getElementById("upload-document-uploader");
+  var approvalButton = document.getElementById("create-approval-request-btn");
   if (refField) refField.value = nextSystemReference(formatDateISO(new Date()));
   if (dateField) dateField.value = formatDateISO(new Date());
   if (uploaderField) uploaderField.value = currentUser.name || "";
   currentUploadDocumentFile = null;
   var fileList = document.getElementById("upload-document-file-list");
   if (fileList) fileList.innerHTML = '<div class="attachment-note">No file selected yet.</div>';
+  if (approvalButton) approvalButton.style.display = currentUser.role === "staff" ? "inline-flex" : "none";
   modal.classList.add("open");
   document.body.classList.add("modal-open");
 }
@@ -8478,6 +8496,456 @@ function closeUploadDocumentModal() {
   var modal = document.getElementById("upload-document-modal");
   if (modal) modal.classList.remove("open");
   document.body.classList.remove("modal-open");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// APPROVAL WORKFLOW ENHANCED UI & STEPPER LOGIC
+// ═══════════════════════════════════════════════════════════════════════════
+
+function setApprovalWorkflowMode(mode) {
+  var select = document.getElementById("approval-workflow-mode");
+  if (select) select.value = mode;
+  var cardStd = document.getElementById("wf-mode-card-standard");
+  var cardCust = document.getElementById("wf-mode-card-custom");
+  if (cardStd) cardStd.classList.toggle("active", mode === "standard");
+  if (cardCust) cardCust.classList.toggle("active", mode === "custom");
+  updateApprovalWorkflowFields();
+}
+
+function setApprovalPriority(priority) {
+  var select = document.getElementById("approval-priority");
+  if (select) select.value = priority;
+  var pills = document.querySelectorAll("#approval-priority-group .priority-pill");
+  pills.forEach(function (pill) {
+    pill.classList.toggle("active", pill.getAttribute("data-priority") === priority);
+  });
+}
+
+function renderStandardApprovalStepper() {
+  var container = document.getElementById("approval-standard-workflow");
+  if (!container) return;
+  
+  var steps = [
+    { num: "01", role: "Unit Supervisor", action: "Initial Review & Sign-off" },
+    { num: "02", role: "Division Chief", action: "Technical Clearance" },
+    { num: "03", role: "ARD", action: "Executive Clearance" },
+    { num: "04", role: "RD", action: "Final Sign-off" }
+  ];
+
+  var html = '<div class="approval-stepper-container">';
+  html += '<div class="approval-stepper-header">';
+  html += '<div class="approval-stepper-title">' + svgIcon("workflow", 14) + ' Standard Regional Matrix Routing</div>';
+  html += '<span class="approval-stepper-badge">4 Stages</span>';
+  html += '</div>';
+  html += '<div class="approval-stepper-track">';
+  
+  steps.forEach(function (st, idx) {
+    html += '<div class="approval-step-card">';
+    html += '<div class="approval-step-num">' + st.num + '</div>';
+    html += '<div class="approval-step-role">' + escapeHtml(st.role) + '</div>';
+    html += '<div class="approval-step-action">' + escapeHtml(st.action) + '</div>';
+    html += '</div>';
+    
+    if (idx < steps.length - 1) {
+      html += '<div class="approval-connector">';
+      html += '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>';
+      html += '</div>';
+    }
+  });
+
+  html += '</div>';
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+function renderCustomLivePipeline() {
+  var container = document.getElementById("custom-workflow-live-preview");
+  if (!container) return;
+
+  var checkedApprovers = Array.from(document.querySelectorAll(".approval-approver:checked")).map(function (input) {
+    return {
+      name: input.getAttribute("data-name"),
+      email: input.value,
+      role: input.getAttribute("data-role") || "Approver"
+    };
+  });
+
+  if (checkedApprovers.length === 0) {
+    container.innerHTML = '<span style="font-size:12px;color:var(--muted);font-style:italic;">Select one or more approvers above to build your custom sequence.</span>';
+    return;
+  }
+
+  var html = '<div style="display:flex;align-items:center;gap:.4rem;flex-wrap:wrap;width:100%;">';
+  checkedApprovers.forEach(function (app, idx) {
+    html += '<div style="display:inline-flex;align-items:center;gap:.35rem;background:#fff;border:1px solid #bfdbfe;border-radius:20px;padding:.25rem .65rem;box-shadow:0 1px 4px rgba(30,79,153,0.08);">';
+    html += '<span style="width:16px;height:16px;border-radius:50%;background:var(--navy3);color:#fff;font-size:9.5px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;">' + (idx + 1) + '</span>';
+    html += '<span style="font-size:12px;font-weight:600;color:var(--navy);">' + escapeHtml(app.name) + '</span>';
+    html += '<span style="font-size:10px;color:var(--muted);">(' + escapeHtml(app.role) + ')</span>';
+    html += '</div>';
+
+    if (idx < checkedApprovers.length - 1) {
+      html += '<span style="color:var(--navy3);font-weight:700;font-size:12px;">&rarr;</span>';
+    }
+  });
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+function openCreateApprovalModal() {
+  if (currentUser.role !== "staff") {
+    showError("Only Staff users can create approval requests.");
+    return;
+  }
+  var subject = (document.getElementById("upload-document-subject") || {}).value || "";
+  var type = (document.getElementById("upload-document-type") || {}).value || "";
+  if (!subject.trim() || !currentUploadDocumentFile) {
+    showError("Complete the document subject and select a file before creating an approval request.");
+    return;
+  }
+  document.getElementById("approval-document-type").textContent = type || "—";
+  document.getElementById("approval-document-category").textContent = (document.getElementById("upload-document-category") || {}).value || "—";
+  document.getElementById("approval-reference").textContent = (document.getElementById("upload-document-ref") || {}).value || "—";
+  document.getElementById("approval-document-date").textContent = (document.getElementById("upload-document-date") || {}).value || "—";
+  document.getElementById("approval-confidentiality").textContent = (document.getElementById("upload-document-confidentiality") || {}).value || "—";
+  document.getElementById("approval-source").textContent = (document.getElementById("upload-document-source") || {}).value || "—";
+  document.getElementById("approval-uploader").textContent = (document.getElementById("upload-document-uploader") || {}).value || currentUser.name;
+  document.getElementById("approval-subject").textContent = subject.trim() || "—";
+  document.getElementById("approval-description").textContent = (document.getElementById("upload-document-description") || {}).value || "—";
+  document.getElementById("approval-file-name").textContent = currentUploadDocumentFile.name || "Uploaded document";
+  
+  setApprovalWorkflowMode("standard");
+  renderStandardApprovalStepper();
+  document.getElementById("approval-approvers").innerHTML = "";
+  setApprovalPriority("Normal");
+  document.getElementById("approval-cc").value = "";
+  document.getElementById("approval-remarks").value = "";
+  
+  closeUploadDocumentModal();
+  document.getElementById("create-approval-modal").classList.add("open");
+  document.body.classList.add("modal-open");
+}
+
+function updateApprovalWorkflowFields() {
+  var mode = document.getElementById("approval-workflow-mode").value;
+  var standard = document.getElementById("approval-standard-workflow");
+  var custom = document.getElementById("approval-custom-workflow");
+  if (standard) standard.style.display = mode === "standard" ? "block" : "none";
+  if (custom) custom.style.display = mode === "custom" ? "block" : "none";
+  if (mode !== "custom") return;
+
+  var container = document.getElementById("approval-approvers");
+  if (!container || container.children.length) {
+    renderCustomLivePipeline();
+    return;
+  }
+  
+  var allowedRoles = ["supervisor", "division chief", "dc", "chief", "ard", "rd", "regional director", "assistant regional director"];
+  var accounts = USER_ACCOUNTS.filter(function (account) {
+    if (!account.email || account.status === "Deactivated") return false;
+    var roleStr = ((account.role || "") + " " + (account.roleLabel || "")).toLowerCase();
+    return allowedRoles.some(function (r) { return roleStr.indexOf(r) !== -1; });
+  });
+  
+  container.innerHTML = accounts.map(function (account) {
+    var roleLabel = account.roleLabel || account.role || "Officer";
+    var initials = (account.name || "U").split(" ").map(function(n){return n[0];}).join("").slice(0,2).toUpperCase();
+    return '<div class="approver-user-card" onclick="toggleApproverCard(this, \'' + escapeHtml(account.email) + '\')">' +
+      '<input type="checkbox" class="approval-approver" value="' + escapeHtml(account.email) + '" data-name="' + escapeHtml(account.name) + '" data-role="' + escapeHtml(roleLabel) + '" style="display:none;" onchange="renderCustomLivePipeline()" />' +
+      '<div class="approver-avatar">' + escapeHtml(initials) + '</div>' +
+      '<div class="approver-card-details">' +
+        '<div class="approver-card-name">' + escapeHtml(account.name) + '</div>' +
+        '<div class="approver-card-role">' + escapeHtml(roleLabel) + ' • ' + escapeHtml(account.division || "ORD") + '</div>' +
+      '</div>' +
+      '<div class="approver-check-badge">✓</div>' +
+    '</div>';
+  }).join("");
+
+  renderCustomLivePipeline();
+}
+
+function toggleApproverCard(cardEl, email) {
+  var checkbox = cardEl.querySelector(".approval-approver");
+  if (!checkbox) return;
+  checkbox.checked = !checkbox.checked;
+  cardEl.classList.toggle("selected", checkbox.checked);
+  renderCustomLivePipeline();
+}
+
+function closeCreateApprovalModal() {
+  var modal = document.getElementById("create-approval-modal");
+  if (modal) modal.classList.remove("open");
+  document.body.classList.remove("modal-open");
+}
+
+function openApprovalSummaryModal() {
+  var mode = document.getElementById("approval-workflow-mode").value;
+  var approvers = Array.from(document.querySelectorAll(".approval-approver:checked")).map(function (input) {
+    return {
+      name: input.getAttribute("data-name"),
+      email: input.value,
+      role: input.getAttribute("data-role") || "Approver"
+    };
+  });
+  if (mode === "custom" && approvers.length === 0) {
+    showError("Select at least one custom approver.");
+    return;
+  }
+  
+  var priority = document.getElementById("approval-priority").value;
+  var cc = document.getElementById("approval-cc").value.trim();
+  var remarks = document.getElementById("approval-remarks").value.trim();
+  var subject = document.getElementById("approval-subject").textContent;
+  var type = document.getElementById("approval-document-type").textContent;
+  var ref = document.getElementById("approval-reference").textContent;
+  var file = document.getElementById("approval-file-name").textContent;
+
+  var priorityClass = priority.toLowerCase();
+  var priorityLabel = priority === "Urgent" ? "⚡ URGENT - Immediate Review" : (priority === "High" ? "▲ HIGH PRIORITY" : "● NORMAL PRIORITY");
+
+  var h = '<div class="approval-summary-card">';
+  
+  // Executive Header Banner
+  h += '<div class="approval-summary-banner">';
+  h += '<div>';
+  h += '<div class="approval-summary-banner-title">Document Approval Request Summary</div>';
+  h += '<div class="approval-summary-banner-sub">Reference: <strong style="font-family:monospace;letter-spacing:0.04em;">' + escapeHtml(ref) + '</strong> • ' + escapeHtml(type) + '</div>';
+  h += '</div>';
+  h += '<div class="approval-summary-priority-tag ' + priorityClass + '">' + escapeHtml(priorityLabel) + '</div>';
+  h += '</div>';
+
+  h += '<div style="padding:1.25rem;">';
+
+  // Document Overview Box
+  h += '<div style="background:#f8fafc;border:1px solid var(--border);border-radius:10px;padding:1rem;margin-bottom:1.25rem;">';
+  h += '<div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.3rem;">Document Subject</div>';
+  h += '<div style="font-size:15px;font-weight:700;color:var(--navy);line-height:1.4;margin-bottom:.6rem;">' + escapeHtml(subject) + '</div>';
+  h += '<div style="display:flex;align-items:center;gap:1.5rem;font-size:12px;color:var(--muted);border-top:1px solid #e2e8f0;padding-top:.5rem;">';
+  h += '<div><strong>Uploaded File:</strong> ' + escapeHtml(file) + '</div>';
+  h += '<div><strong>Strategy:</strong> ' + (mode === "standard" ? "Standard Matrix (4-Tier)" : "Custom Chain") + '</div>';
+  h += '</div>';
+  h += '</div>';
+
+  // Visual Approval Workflow Stepper Diagram
+  h += '<div style="margin-bottom:1.25rem;">';
+  h += '<div style="font-size:11px;font-weight:700;color:var(--navy);text-transform:uppercase;letter-spacing:.08em;margin-bottom:.6rem;display:flex;align-items:center;gap:.4rem;">';
+  h += svgIcon("workflow", 14) + ' Designated Approval Pipeline';
+  h += '</div>';
+
+  h += '<div style="background:linear-gradient(180deg,#eff6ff 0%,#f8fafc 100%);border:1px solid #bfdbfe;border-radius:12px;padding:1rem;">';
+  h += '<div style="display:flex;align-items:center;gap:.5rem;overflow-x:auto;">';
+
+  if (mode === "standard") {
+    var stdSteps = [
+      { num: "1", role: "Unit Supervisor", desc: "Initial Review" },
+      { num: "2", role: "Division Chief", desc: "Technical Clearance" },
+      { num: "3", role: "ARD", desc: "Executive Clearance" },
+      { num: "4", role: "RD", desc: "Final Sign-off" }
+    ];
+    stdSteps.forEach(function (st, idx) {
+      h += '<div style="flex:1;min-width:120px;background:#fff;border:1px solid #93c5fd;border-radius:8px;padding:.6rem .5rem;text-align:center;">';
+      h += '<div style="font-size:10px;font-weight:700;color:var(--navy3);margin-bottom:2px;">STAGE ' + st.num + '</div>';
+      h += '<div style="font-size:12px;font-weight:700;color:var(--navy);">' + escapeHtml(st.role) + '</div>';
+      h += '<div style="font-size:10px;color:var(--muted);">' + escapeHtml(st.desc) + '</div>';
+      h += '</div>';
+
+      if (idx < stdSteps.length - 1) {
+        h += '<div style="color:var(--navy3);font-weight:700;font-size:14px;">&rarr;</div>';
+      }
+    });
+  } else {
+    approvers.forEach(function (app, idx) {
+      h += '<div style="flex:1;min-width:120px;background:#fff;border:1px solid #93c5fd;border-radius:8px;padding:.6rem .5rem;text-align:center;">';
+      h += '<div style="font-size:10px;font-weight:700;color:var(--navy3);margin-bottom:2px;">STAGE ' + (idx + 1) + '</div>';
+      h += '<div style="font-size:12px;font-weight:700;color:var(--navy);">' + escapeHtml(app.name) + '</div>';
+      h += '<div style="font-size:10px;color:var(--muted);">' + escapeHtml(app.role) + '</div>';
+      h += '</div>';
+
+      if (idx < approvers.length - 1) {
+        h += '<div style="color:var(--navy3);font-weight:700;font-size:14px;">&rarr;</div>';
+      }
+    });
+  }
+
+  h += '</div>';
+  h += '</div>';
+  h += '</div>';
+
+  // Submitter Instructions & CC Row
+  h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;">';
+  h += '<div style="background:#f8fafc;border:1px solid var(--border);border-radius:8px;padding:.75rem;">';
+  h += '<div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.07em;margin-bottom:.2rem;">CC / For Information</div>';
+  h += '<div style="font-size:12.5px;color:var(--text);font-weight:500;">' + escapeHtml(cc || "None specified") + '</div>';
+  h += '</div>';
+
+  h += '<div style="background:#f8fafc;border:1px solid var(--border);border-radius:8px;padding:.75rem;">';
+  h += '<div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.07em;margin-bottom:.2rem;">Submitter Instructions</div>';
+  h += '<div style="font-size:12.5px;color:var(--text);font-weight:500;">' + escapeHtml(remarks || "No additional instructions provided") + '</div>';
+  h += '</div>';
+  h += '</div>';
+
+  h += '</div>'; // padding
+  h += '</div>'; // card
+
+  document.getElementById("approval-summary-content").innerHTML = h;
+  document.getElementById("create-approval-modal").classList.remove("open");
+  document.getElementById("approval-summary-modal").classList.add("open");
+}
+
+function closeApprovalSummaryModal() {
+  var modal = document.getElementById("approval-summary-modal");
+  if (modal) modal.classList.remove("open");
+  document.body.classList.remove("modal-open");
+}
+
+function confirmApprovalRequest() {
+  if (!currentUploadDocumentFile) {
+    closeApprovalSummaryModal();
+    showError("The uploaded file is no longer available. Please select it again.");
+    return;
+  }
+  // Read from approval display divs (set when approval modal was opened) using textContent
+  // since they are <div> elements, not <input> elements.
+  var refEl = document.getElementById("approval-reference");
+  var typeEl = document.getElementById("approval-document-type");
+  var categoryEl = document.getElementById("approval-document-category");
+  var subjectEl = document.getElementById("approval-subject");
+  var dateEl = document.getElementById("approval-document-date");
+  var sourceEl = document.getElementById("approval-source");
+  var descEl = document.getElementById("approval-description");
+  var confEl = document.getElementById("approval-confidentiality");
+
+  var ref = (refEl && refEl.textContent.trim() !== "—" ? refEl.textContent.trim() : null)
+    || (document.getElementById("upload-document-ref") || {}).value
+    || nextSystemReference(formatDateISO(new Date()));
+  var type = (typeEl && typeEl.textContent.trim() !== "—" ? typeEl.textContent.trim() : null)
+    || (document.getElementById("upload-document-type") || {}).value
+    || "Memorandum";
+  var category = (categoryEl && categoryEl.textContent.trim() !== "—" ? categoryEl.textContent.trim() : null)
+    || (document.getElementById("upload-document-category") || {}).value
+    || "Administrative";
+  var subject = (subjectEl ? subjectEl.textContent.trim() : "")
+    || (document.getElementById("upload-document-subject") || {}).value || "";
+  var date = (dateEl && dateEl.textContent.trim() !== "—" ? dateEl.textContent.trim() : null)
+    || (document.getElementById("upload-document-date") || {}).value
+    || formatDateISO(new Date());
+  var source = (sourceEl && sourceEl.textContent.trim() !== "—" ? sourceEl.textContent.trim() : null)
+    || (document.getElementById("upload-document-source") || {}).value || currentUser.name;
+  var description = (descEl && descEl.textContent.trim() !== "—" ? descEl.textContent.trim() : "")
+    || (document.getElementById("upload-document-description") || {}).value || "";
+  var confidentiality = (confEl && confEl.textContent.trim() !== "—" ? confEl.textContent.trim() : null)
+    || (document.getElementById("upload-document-confidentiality") || {}).value || "Internal";
+  var workflowMode = document.getElementById("approval-workflow-mode").value;
+  
+  var selectedApprovers = Array.from(document.querySelectorAll(".approval-approver:checked")).map(function (input) {
+    return { name: input.getAttribute("data-name"), email: input.value, role: input.getAttribute("data-role") || "Approver" };
+  });
+
+  // Determine assigned first approver
+  var firstApproverName = "Supervisor";
+  var firstApproverEmail = "";
+  var workflow = "";
+
+  if (workflowMode === "standard") {
+    // For standard mode, find the actual supervisor in the current user's division
+    var supervisorAccount = USER_ACCOUNTS.find(function(u) {
+      return (u.role === "supervisor" || u.roleLabel === "Supervisor")
+        && (u.division === currentUser.division || !currentUser.division)
+        && u.status !== "Inactive";
+    }) || USER_ACCOUNTS.find(function(u) {
+      return u.role === "supervisor" || u.roleLabel === "Supervisor";
+    });
+    if (supervisorAccount) {
+      firstApproverName = supervisorAccount.name;
+      firstApproverEmail = supervisorAccount.email;
+    } else {
+      firstApproverName = "Supervisor";
+    }
+    workflow = "Supervisor > Division Chief > ARD > RD";
+  } else {
+    if (selectedApprovers.length > 0) {
+      firstApproverName = selectedApprovers[0].name;
+      firstApproverEmail = selectedApprovers[0].email;
+    }
+    workflow = selectedApprovers.map(function (approver) { return approver.name; }).join(" > ");
+  }
+
+  var cc = document.getElementById("approval-cc").value.trim();
+  var priority = document.getElementById("approval-priority").value;
+  var remarks = document.getElementById("approval-remarks").value.trim();
+  var now = new Date().toISOString();
+
+  var approvalDoc = {
+    ref: ref,
+    documentId: ref,
+    type: type,
+    category: category,
+    subject: subject,
+    referenceNumber: ref,
+    documentDate: date,
+    confidentialityLevel: confidentiality,
+    priority: priority,
+    source: source,
+    sender: currentUser.name,
+    senderEmail: currentUser.email,
+    from: currentUser.name,
+    to: firstApproverName,
+    currentHandler: firstApproverName,
+    description: description,
+    uploadedBy: currentUser.name,
+    uploadedByRole: currentUser.roleLabel || "Staff",
+    status: "Sent",
+    date: date,
+    kind: "outgoing",
+    division: currentUser.division || "ORD",
+    physicalCopy: false,
+    version: 1,
+    isApprovalRequest: true,
+    approvalStatus: "For Approval",
+    approvalWorkflowMode: workflowMode,
+    approvalWorkflow: workflow,
+    approvalApprovers: selectedApprovers,
+    approvalCC: cc,
+    approvalRemarks: remarks,
+    attachments: [cloneAttachmentData(currentUploadDocumentFile)],
+    versionHistory: [{ version: 1, uploadedBy: currentUser.name, date: date, note: "Approval request submitted" }],
+    tracking: {
+      lastActor: currentUser.role,
+      lastUpdated: now,
+      trail: [
+        { user: currentUser.name, action: "Created & Submitted Approval Request", timestamp: now },
+        { user: currentUser.name, action: "Forwarded for Approval to " + firstApproverName, timestamp: now }
+      ]
+    }
+  };
+
+  DOCS.unshift(approvalDoc);
+  saveDocuments();
+
+  // Send notification to the assigned approver
+  var resolvedApprover = resolveRecipient(firstApproverEmail || firstApproverName);
+  if (resolvedApprover) {
+    addNotification({
+      recipientKey: getNotificationKeyForUser(resolvedApprover),
+      type: "new_document",
+      documentId: ref,
+      documentRef: ref,
+      documentTitle: subject,
+      senderId: currentUser.id || currentUser.email || currentUser.name,
+      senderName: currentUser.name,
+      senderRole: currentUser.roleLabel || currentUser.role || "",
+      message: currentUser.name + " forwarded an approval request (" + ref + ") to you for review.",
+      preview: subject
+    });
+  }
+
+  currentUploadDocumentFile = null;
+  closeApprovalSummaryModal();
+
+  // Set current tab to 'for-approval' and navigate to Outgoing page
+  currentOutgoingTab = "for-approval";
+  renderNav();
+  showSuccess("Approval request submitted and forwarded to " + firstApproverName);
+  showPage("outgoing");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -9082,6 +9550,35 @@ function showMetadataModal(ref) {
   });
   h += '</div>';
 
+  // Approval Workflow tracker box for approval documents
+  if (doc.isApprovalRequest) {
+    var wfText = doc.approvalWorkflow || "Supervisor > Division Chief > ARD > RD";
+    var wfSteps = wfText.split(">").map(function(s){ return s.trim(); });
+    
+    h += '<div style="background:linear-gradient(180deg,#eff6ff 0%,#f8fafc 100%);border:1px solid #bfdbfe;border-radius:10px;padding:1rem;margin-bottom:1rem;">';
+    h += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.6rem;">';
+    h += '<div style="font-size:11px;font-weight:700;color:var(--navy);text-transform:uppercase;letter-spacing:.08em;display:flex;align-items:center;gap:.4rem;">';
+    h += svgIcon("workflow", 14) + ' Designated Approval Pipeline';
+    h += '</div>';
+    h += '<span style="font-size:11px;font-weight:700;padding:.15rem .6rem;border-radius:12px;background:#dbeafe;color:#1e40af;">' + escapeHtml(doc.approvalStatus || "For Approval") + '</span>';
+    h += '</div>';
+    
+    h += '<div style="display:flex;align-items:center;gap:.4rem;overflow-x:auto;padding:.3rem 0;">';
+    wfSteps.forEach(function (stepName, idx) {
+      var isFirst = idx === 0;
+      h += '<div style="flex:1;min-width:110px;background:#fff;border:1px solid ' + (isFirst ? 'var(--navy3)' : '#cbd5e1') + ';border-radius:8px;padding:.55rem .5rem;text-align:center;box-shadow:0 1px 4px rgba(0,0,0,0.03);">';
+      h += '<div style="font-size:9.5px;font-weight:700;color:' + (isFirst ? 'var(--navy3)' : 'var(--muted)') + ';margin-bottom:2px;">STAGE ' + (idx + 1) + '</div>';
+      h += '<div style="font-size:11.5px;font-weight:700;color:var(--navy);">' + escapeHtml(stepName) + '</div>';
+      h += '<div style="font-size:9.5px;color:' + (isFirst ? '#2563eb' : 'var(--muted)') + ';margin-top:2px;">' + (isFirst ? '● Active Review' : 'Pending') + '</div>';
+      h += '</div>';
+      if (idx < wfSteps.length - 1) {
+        h += '<span style="color:var(--navy3);font-weight:700;font-size:12px;">&rarr;</span>';
+      }
+    });
+    h += '</div>';
+    h += '</div>';
+  }
+
   // Version history summary
   if (doc.versionHistory && doc.versionHistory.length > 1) {
     h += '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:.75rem 1rem;margin-bottom:1rem">';
@@ -9442,6 +9939,8 @@ function setTab(el, t) {
 
 function filterDocsByTab(docs, tab) {
   if (tab === "all") return docs;
+  if (tab === "for-approval") return docs.filter(function (d) { return d.isApprovalRequest === true; });
+  if (tab === "regular-doc") return docs.filter(function (d) { return d.isApprovalRequest !== true; });
   if (tab === "active") return docs.filter(function (d) {
     return ["Sent", "Acknowledged", "In Progress", "Needs Clarification", "On Hold"].includes(d.status);
   });
