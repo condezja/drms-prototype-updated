@@ -4258,25 +4258,15 @@ function statusPill(s) {
 // WORKFLOW STATUS DROPDOWN - REPLACES STATIC STATUS BADGES
 // ═══════════════════════════════════════════════════════════════════════════
 
-<<<<<<< HEAD
-var workflowStatuses = [
-  { value: "New", label: "New" },
-=======
 var WORKFLOW_STATUSES = [
->>>>>>> origin/main
   { value: "Sent", label: "Sent" },
   { value: "Acknowledged", label: "Acknowledged" },
   { value: "In Progress", label: "In Progress" },
   { value: "Needs Clarification", label: "Needs Clarification" },
   { value: "On Hold", label: "On Hold" },
-<<<<<<< HEAD
-  { value: "Done", label: "Done" },
-];
-=======
   { value: "Done", label: "Done" }
 ];
 var workflowStatuses = WORKFLOW_STATUSES;
->>>>>>> origin/main
 
 function renderStatusDropdown(docRef, currentStatus, isEditable) {
   // Normalize current status
